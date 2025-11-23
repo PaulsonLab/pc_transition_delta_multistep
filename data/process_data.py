@@ -118,18 +118,3 @@ def extract_data(db_path, total_points, lines):
             all_rotations.append(r)
 
     return np.array(all_point_coordinates), np.array(all_steps).reshape(-1, 1), np.array(all_positions), np.array(all_rotations)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    
