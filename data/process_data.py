@@ -35,26 +35,102 @@ def meshcontainer_to_pv(mesh):
     return pv.PolyData(mesh.vertices, face_array)
 
 
-def get_point_coordinates(vertices, triangles, point_translations, point_triangle_ids):
-    coordinates = []
-
+def barycentric_sampling(mesh: pv.PolyData, num_points: int, tri_mask: np.array = None) -> tuple[np.array, np.array, np.array]:
+    '''
+    Returns sampled points and their barycentric information.
+    
+    Returns:
+        points: (N, 3) sampled point positions
+        triangle_ids: (N,) which triangle each point belongs to (in original mesh indexing)
+        barycentric_coords: (N, 3) barycentric coordinates (b0, b1, b2)
+    '''
+    mesh = mesh.compute_cell_sizes()
+    triangles = mesh.regular_faces
+    triangle_areas = mesh.cell_data["Area"]
+    points = mesh.points
+    
+    # Store original triangle indices before masking
+    original_tri_indices = np.arange(len(triangles))
+    
+    if tri_mask is not None:
+        triangles = triangles[tri_mask]
+        triangle_areas = triangle_areas[tri_mask]
+        original_tri_indices = original_tri_indices[tri_mask]
+        total_area = np.sum(triangle_areas)
+    else:
+        total_area = mesh.area
+    
+    num_triangles = len(triangle_areas)
+    assert num_triangles > 0, "Triangle mask is empty"
+    
+    point_translations = []
+    point_triangle_ids = []  # Indices into masked triangles
+    
+    for i in range(num_triangles):
+        for _ in range(math.floor(triangle_areas[i] / total_area * num_points)):
+            point_translations.append([np.random.random(), np.random.random()])
+            point_triangle_ids.append(i)
+    
+    for i in range(num_points - len(point_translations)):
+        point_translations.append([np.random.random(), np.random.random()])
+        point_triangle_ids.append(np.random.randint(0, num_triangles))
+    
+    # Compute points and barycentric coordinates
+    sampled_points = []
+    barycentric_coords = []
+    global_triangle_ids = []
+    
     for i in range(len(point_triangle_ids)):
-        idx0, idx1, idx2 = triangles[point_triangle_ids[i]], triangles[point_triangle_ids[i]+1], triangles[point_triangle_ids[i]+2]
-
-        v0 = [vertices[idx0 * 3], vertices[idx0 * 3 + 1], vertices[idx0 * 3 + 2]]
-        v1 = [vertices[idx1 * 3], vertices[idx1 * 3 + 1], vertices[idx1 * 3 + 2]]
-        v2 = [vertices[idx2 * 3], vertices[idx2 * 3 + 1], vertices[idx2 * 3 + 2]]
-
-        r0 = point_translations[i // 3][0]
-        r1 = point_translations[i // 3][1]
-
+        tri_id = point_triangle_ids[i]
+        idx0, idx1, idx2 = triangles[tri_id]
+        
+        v0 = points[idx0]
+        v1 = points[idx1]
+        v2 = points[idx2]
+        
+        r0, r1 = point_translations[i]
         b0 = 1 - math.sqrt(r0)
         b1 = math.sqrt(r0) * (1 - r1)
         b2 = r1 * math.sqrt(r0)
-
-        coordinates.append([b0*v0[0]+b1*v1[0]+b2*v2[0], b0*v0[1]+b1*v1[1]+b2*v2[1], b0*v0[2]+b1*v1[2]+b2*v2[2]])
-    return coordinates
+        
+        point = b0 * v0 + b1 * v1 + b2 * v2
+        sampled_points.append(point)
+        barycentric_coords.append([b0, b1, b2])
+        global_triangle_ids.append(original_tri_indices[tri_id])
     
+    return np.array(sampled_points), np.array(global_triangle_ids), np.array(barycentric_coords)
+
+
+def update_barycentric_points(deformed_mesh: pv.PolyData, triangle_ids: np.array, barycentric_coords: np.array) -> np.array:
+    '''
+    Updates point positions based on deformed mesh using stored barycentric coordinates.
+    
+    Args:
+        deformed_mesh: Deformed mesh with same topology as original
+        triangle_ids: (N,) triangle indices for each point
+        barycentric_coords: (N, 3) barycentric coordinates
+    
+    Returns:
+        (N, 3) updated point positions
+    '''
+    triangles = deformed_mesh.regular_faces
+    vertices = deformed_mesh.points
+    
+    updated_points = []
+    for i in range(len(triangle_ids)):
+        tri_id = triangle_ids[i]
+        idx0, idx1, idx2 = triangles[tri_id]
+        
+        v0 = vertices[idx0]
+        v1 = vertices[idx1]
+        v2 = vertices[idx2]
+        
+        b0, b1, b2 = barycentric_coords[i]
+        point = b0 * v0 + b1 * v1 + b2 * v2
+        updated_points.append(point)
+    
+    return np.array(updated_points)
+
 
 def extract_data(db_path, total_points, lines):
     conn = sqlite3.connect(db_path)
@@ -66,33 +142,13 @@ def extract_data(db_path, total_points, lines):
     all_steps = []
     all_positions = []
     all_rotations = []
+    series_lengths = []
+    series_ids = []
 
     for series_id in tqdm(df['series_id'].unique(), desc="Processing series"):
         group_df = df[df['series_id'] == series_id].reset_index(drop=True)
-
-        # Use first frame to generate sampling pattern
-        base_mesh = json.loads(group_df.loc[0, "result"])
-        vertices = base_mesh["Vertices"]
-        triangles = base_mesh["Triangles"]
-        tmp_mesh = MeshContainer.from_db(vertices, triangles)
-        pv_mesh = meshcontainer_to_pv(tmp_mesh)
-        pv_mesh = pv_mesh.compute_cell_sizes()
-        triangle_areas = pv_mesh.cell_data["Area"]
-
-        point_translations = []
-        point_triangle_ids = []
-
-        for i in range(0, len(triangles), 3):
-            tri_area = triangle_areas[i // 3]
-            num_points = math.floor(tri_area / pv_mesh.area * total_points)
-            for _ in range(num_points):
-                point_translations.append([random.random(), random.random()])
-                point_triangle_ids.append(i)
-
-        while len(point_translations) < total_points:
-            i = random.randint(0, len(triangle_areas) - 1)
-            point_translations.append([random.random(), random.random()])
-            point_triangle_ids.append(i * 3)
+        series_lengths.append(len(group_df) - 1)
+        series_ids.append(series_id)
 
         # Loop over i and i+1 pairs, skipping last row
         for i in tqdm(range(len(group_df) - 1), desc=f"Series {series_id}", leave=False):
@@ -103,7 +159,13 @@ def extract_data(db_path, total_points, lines):
             mesh_data = json.loads(row_i["result"])
             vertices = mesh_data["Vertices"]
             triangles = mesh_data["Triangles"]
-            coords = get_point_coordinates(vertices, triangles, point_translations, point_triangle_ids)
+            tmp_mesh = MeshContainer.from_db(vertices, triangles)
+            pv_mesh = meshcontainer_to_pv(tmp_mesh)
+            
+            if i == 0:
+                coords, point_triangle_ids, bary_coords = barycentric_sampling(pv_mesh, total_points)
+            else:
+                coords = update_barycentric_points(pv_mesh, point_triangle_ids, bary_coords)
 
             # Get data from frame i+1
             mesh_data_next = json.loads(row_ip1["result"])
@@ -111,10 +173,9 @@ def extract_data(db_path, total_points, lines):
             p = json.loads(row_ip1["position"])
             r = json.loads(row_ip1["rotation"])
 
-
             all_point_coordinates.append(coords)
             all_steps.append(s)
             all_positions.append(p)
             all_rotations.append(r)
 
-    return np.array(all_point_coordinates), np.array(all_steps).reshape(-1, 1), np.array(all_positions), np.array(all_rotations)
+    return np.array(all_point_coordinates), np.array(all_steps).reshape(-1, 1), np.array(all_positions), np.array(all_rotations), series_lengths, series_ids
