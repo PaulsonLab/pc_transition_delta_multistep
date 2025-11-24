@@ -1,14 +1,10 @@
 import sqlite3
-import csv
 import pandas as pd
 import numpy as np
 import json
 import pyvista as pv
-import time
-import random
 import math
 from tqdm import tqdm
-from scipy.spatial.transform import Rotation
 
 
 class MeshContainer:
@@ -138,7 +134,8 @@ def extract_data(db_path, total_points, lines):
 
     conn.close()
 
-    all_point_coordinates = []
+    all_points_t = []
+    all_points_tp1 = []
     all_steps = []
     all_positions = []
     all_rotations = []
@@ -150,32 +147,35 @@ def extract_data(db_path, total_points, lines):
         series_lengths.append(len(group_df) - 1)
         series_ids.append(series_id)
 
-        # Loop over i and i+1 pairs, skipping last row
+        # Loop over i and i+1 pairs
         for i in tqdm(range(len(group_df) - 1), desc=f"Series {series_id}", leave=False):
-            row_i = group_df.loc[i]
-            row_ip1 = group_df.loc[i + 1]
+            row_t = group_df.loc[i]
+            row_tp1 = group_df.loc[i + 1]
 
             # Input mesh (coords from frame i)
-            mesh_data = json.loads(row_i["result"])
-            vertices = mesh_data["Vertices"]
-            triangles = mesh_data["Triangles"]
-            tmp_mesh = MeshContainer.from_db(vertices, triangles)
-            pv_mesh = meshcontainer_to_pv(tmp_mesh)
-            
-            if i == 0:
-                coords, point_triangle_ids, bary_coords = barycentric_sampling(pv_mesh, total_points)
-            else:
-                coords = update_barycentric_points(pv_mesh, point_triangle_ids, bary_coords)
+            mesh_data_t = json.loads(row_t["result"])
+            vertices_t = mesh_data_t["Vertices"]
+            triangles_t = mesh_data_t["Triangles"]
+            tmp_mesh_t = MeshContainer.from_db(vertices_t, triangles_t)
+            pv_mesh_t = meshcontainer_to_pv(tmp_mesh_t)
+            coords_t, point_triangle_ids, bary_coords = barycentric_sampling(pv_mesh_t, total_points, tri_mask=None)
 
             # Get data from frame i+1
-            mesh_data_next = json.loads(row_ip1["result"])
-            s = np.sum(np.array(mesh_data_next["Steps"]))
-            p = json.loads(row_ip1["position"])
-            r = json.loads(row_ip1["rotation"])
+            mesh_data_tp1 = json.loads(row_tp1["result"])
+            vertices_tp1 = mesh_data_tp1["Vertices"]
+            triangles_tp1 = mesh_data_tp1["Triangles"]
+            tmp_mesh_tp1 = MeshContainer.from_db(vertices_tp1, triangles_tp1)
+            pv_mesh_tp1 = meshcontainer_to_pv(tmp_mesh_tp1)
+            coords_tp1 = update_barycentric_points(pv_mesh_tp1, point_triangle_ids, bary_coords)
+            
+            s = np.sum(np.array(mesh_data_tp1["Steps"]))
+            p = json.loads(row_tp1["position"])
+            r = json.loads(row_tp1["rotation"])
 
-            all_point_coordinates.append(coords)
+            all_points_t.append(coords_t)
+            all_points_tp1.append(coords_tp1)
             all_steps.append(s)
             all_positions.append(p)
             all_rotations.append(r)
 
-    return np.array(all_point_coordinates), np.array(all_steps).reshape(-1, 1), np.array(all_positions), np.array(all_rotations), series_lengths, series_ids
+    return np.array(all_points_t), np.array(all_points_tp1), np.array(all_steps).reshape(-1, 1), np.array(all_positions), np.array(all_rotations), series_lengths, series_ids
