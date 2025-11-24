@@ -90,8 +90,8 @@ def train_model(train_loader, test_loader, net, epochs, max_rollout_horizon, opt
     
             # save input/output as image file
             if(i%50==0):
-                test_samples, test_actions, _, test_samples_next = next(iter(test_loader))
-                loss , test_output = test_batch(test_samples, test_actions, test_samples_next, net, max_rollout_horizon, device)
+                test_samples, test_actions, test_deltas, test_samples_next = next(iter(test_loader))
+                loss , test_output = test_batch(test_samples, test_actions, test_deltas, net, max_rollout_horizon, device)
                 utils.plotPCbatch(test_samples, test_samples_next[:,-1,:,:], test_output, show=False, save=True, name = (output_folder + "epoch_" + str(i)))
 
 

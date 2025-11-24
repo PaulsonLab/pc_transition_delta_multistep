@@ -6,8 +6,8 @@ import numpy as np
 class MultiStepTransitionDataset(Dataset):
     def __init__(self, states_seqs, actions_seqs, rollout_horizon=5):
         """
-        states_seqs: list of 5 numpy arrays, each [T_seq, material_nodes, 3] (s[:-1])
-        actions_seqs: list of 5 numpy arrays, each [T_seq, slab_nodes, 3] (a[1:])
+        states_seqs: list of numpy arrays, each [T_seq, material_nodes, 3]
+        actions_seqs: list of numpy arrays, each [T_seq, actions_dim]
         """
         self.states_seqs = states_seqs
         self.actions_seqs = actions_seqs
@@ -32,7 +32,7 @@ class MultiStepTransitionDataset(Dataset):
 
 
         state_t = torch.from_numpy(s_seq[t]).float()  # [material_points, 3]
-        actions = torch.from_numpy(a_seq[t : t+self.rollout_horizon]).float()  # [rollout_horizons, actions, 3]
+        actions = torch.from_numpy(a_seq[t : t+self.rollout_horizon]).float()  # [rollout_horizons, actions_dim]
         states_tpH = torch.from_numpy(s_seq[t+1 : t+1+self.rollout_horizon]).float()  # [rollout_horizons, material_points, 3]
         delta_tpH = states_tpH - state_t.unsqueeze(0)
 
@@ -57,6 +57,3 @@ def GetMultiStepDataLoaders(states_list, actions_list, batch_size, train_set_per
                              num_workers=num_workers, pin_memory=pin_memory)
 
     return train_loader, test_loader
-
-
-
